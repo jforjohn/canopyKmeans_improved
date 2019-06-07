@@ -2,14 +2,15 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.metrics.pairwise import pairwise_distances
 from functools import reduce
 import numpy as np
+import pandas as pd
+
+import sys
 
 class MyCanopy(BaseEstimator, TransformerMixin):
   def calc_meanDist(self, data, dists=None):
     n = data.shape[0]
-    print(n)
     if dists is None:
       dists = pairwise_distances(data, metric='euclidean')
-    
     if dists.shape[0] == dists.shape[1]:
       triang_dists = dists[np.arange(dists.shape[0])[:,None] > np.arange(dists.shape[1])].sum()
     else:
@@ -18,15 +19,18 @@ class MyCanopy(BaseEstimator, TransformerMixin):
     meanDist = 2*triang_dists/(n*(n-1))
     return dists, meanDist
 
-  def p_density(self, dp, dists_dp, meanDist):
-    f = np.where((dists_dp - meanDist)<0, 1, 0)
+  def p_density(self, dp, dists_i, meanDist):
+    f = np.where((dists_i - meanDist)<0, 1, 0)
     p_i = f.sum()
     return p_i
 
   def a_density(self, meanDist, dists_i, p_i):
     cluster_dists = dists_i[dists_i < meanDist]
     d = cluster_dists.sum()
-    return 2*d/(p_i*(p_i-1))
+    if p_i-1 == 0:
+      return 0
+    else:
+      return 2*d/(p_i*(p_i-1))
 
   def s_distance(self, p, p_i, dists_i):
     dist_i_less_j = dists_i[p-p_i>0]
@@ -36,12 +40,15 @@ class MyCanopy(BaseEstimator, TransformerMixin):
       return dists_i.max()
       
   def w_weight(self, p_i, a_i, s_i):
-    return p_i*s_i/a_i
+    if a_i == 0:
+      return 0
+    else:
+      return p_i*s_i/a_i
 
   def removeData(self, meanDist, dists, data, ind, centroids_dists=np.array([])):
     # in a row of dists var we have all the distances of a data point to the rest
-    dists_dp = dists[ind, :]
-    dist_filter = dists_dp>=meanDist
+    dists_i = dists[ind, :]
+    dist_filter = dists_i>=meanDist
     new_dists = dists[dist_filter, :]
     if dists.shape[0] == dists.shape[1]:
       new_dists = new_dists[:, dist_filter]
@@ -53,13 +60,15 @@ class MyCanopy(BaseEstimator, TransformerMixin):
       centroid_dists = centroids_dists[ind]
       new_centroids_dists.append(centroid_dists[dist_filter])
     new_centroids_dists = np.array(new_centroids_dists)
-    return new_dists, new_data, new_centroids_dists
+    return new_dists, new_data, new_centroids_dists, dist_filter
 
   def fit(self, dt):
     if isinstance(dt, pd.DataFrame):
       data = dt.values
     elif isinstance(dt, np.ndarray):
       data = dt
+    elif isinstance(dt, list):
+      data = np.array(dt)
     else:
       raise Exception('dt should be a DataFrame or a numpy array')
     self.centroids = {}
@@ -80,13 +89,20 @@ class MyCanopy(BaseEstimator, TransformerMixin):
     self.centroids[centroid_index] = centroid
     centroids_dists = np.concatenate([centroids_dists, dists[max_p_sample_ind, :]],
                                      axis=0).reshape(1,-1)
-    print(meanDist)
-    print(data.shape)
-    print(dists.shape)
-    dists, data, centroids_dists = self.removeData(meanDist, dists, data, max_p_sample_ind, centroids_dists=centroids_dists)
+    '''                         
+    print('MD', meanDist)
+    print('1 data',data.shape)
+    print('1 dists', dists.shape)
+    print('1 p', len(p))
+    '''
+    dists, data, centroids_dists, _ = self.removeData(meanDist, dists, data, max_p_sample_ind, centroids_dists=centroids_dists)
     
-    print(data.shape)
-    print(dists.shape)
+    '''
+    print('2 data', data.shape)
+    print('2 dists', dists.shape)
+    print('cd', centroids_dists)
+    print('2 p',len(p))
+    '''
     ############
 
     # c2
@@ -96,11 +112,12 @@ class MyCanopy(BaseEstimator, TransformerMixin):
     w = np.array([])
 
     ############
+    
     _, meanDist = self.calc_meanDist(data, dists=dists)
     for ind in range(data.shape[0]):
       p_i = self.p_density(ind, dists[ind,:], meanDist)
       p = np.append(p, p_i)
-
+      p_i = p[ind]
       a = np.append(a, self.a_density(meanDist, dists[ind,:], p_i))
     
     for ind in range(data.shape[0]):
@@ -116,15 +133,24 @@ class MyCanopy(BaseEstimator, TransformerMixin):
     self.centroids[centroid_index] = centroid
     centroids_dists = np.concatenate([centroids_dists, [dists[max_w_sample_ind, :]]],
                                      axis=0)
+    dists, data, centroids_dists, dist_filter = self.removeData(meanDist, dists, data, max_w_sample_ind, centroids_dists=centroids_dists)
 
-    dists, data, centroids_dists = self.removeData(meanDist, dists, data, max_w_sample_ind, centroids_dists=centroids_dists)
-    print(1, data.shape)
-    print(2, dists.shape)
+    '''
+    print('3 data', data.shape)
+    print('3 dist', dists.shape)
+    print('3 p',len(p))
+    print('3 cdists', centroids_dists.shape)
+    '''
     ############
     
-    p_prev = p
-    s_prev = s
-    while data.size > 0:
+    #p_prev = np.zeros((len(data))) #p
+    #s_prev = np.ones((len(data))) * 999 #s
+    #print(self.centroids)
+    #print(centroids_dists)
+
+    p_prev = p[dist_filter]
+    s_prev = s[dist_filter]
+    while data.shape[0] > 1:
       w = np.array([])
       p = np.array([])
       a = np.array([])
@@ -139,67 +165,98 @@ class MyCanopy(BaseEstimator, TransformerMixin):
         a = np.append(a, self.a_density(meanDist, dists[ind, :], p_i))
       
       ind = 0
+      toRemove = False
+      #print(p_prev.shape, p.shape, data.shape)
       while data.size > 0 and ind < data.shape[0]:
-        s_i = self.s_distance(p, p[ind], dists[ind,:])
-        s = np.append(s, s_i)
-        # remove outliers
-        if p_prev[ind] > p[ind] and s_prev[ind] < s_i:
-          data = np.delete(data, ind, axis=0)
-          dists = np.delete(dists, ind, axis=0)
-          dists = np.delete(dists, ind, axis=1)
-          p = np.delete(p, ind)
-          a = np.delete(a, ind)
-          p_prev = np.delete(p_prev, ind)
-          s_prev = np.delete(s_prev, ind)
-          centroids_dists = np.delete(centroids_dists, ind, axis=1)
-          continue
- 
-        w_i = self.w_weight(p[ind], a[ind], s_i)
-        if w.shape[0] == data.shape[0]:
-          w[ind] *= w_i
+        
+        #s_i = self.s_distance(p, p[ind], dists[ind,:])
+        s_centroid = []
+        for centroid_dists in centroids_dists:
+          #s_i = centroid_dists[ind]
+          s_i = self.s_distance(p, p[ind], centroid_dists)
+          #s_centroid.append(s_i)
+          
+          # remove outliers
+          #print(len(w), len(s_prev), centroids_dists.shape)
+          if p_prev[ind] > p[ind] and s_prev[ind] < s_i:
+            toRemove = True
+            data = np.delete(data, ind, axis=0)
+            dists = np.delete(dists, ind, axis=0)
+            dists = np.delete(dists, ind, axis=1)
+            p = np.delete(p, ind)
+            a = np.delete(a, ind)
+            #s = np.delete(s, ind)
+            p_prev = np.delete(p_prev, ind)
+            s_prev = np.delete(s_prev, ind)
+            #w = np.delete(w, ind)
+            centroids_dists = np.delete(centroids_dists, ind, axis=1)
+            break
+        s_centroid.append(s_i)
+
+        if toRemove:
+          toRemove = False
         else:
-          w = np.append(w, w_i)
-        ind += 1
-      
-      max_w_sample_ind = w.argmax()
-      centroid = data[max_w_sample_ind, :]
-      print(centroids_dists.shape, dists.shape, data.shape)
-      centroids_dists = np.concatenate([centroids_dists, [dists[max_w_sample_ind, :]]], axis=0)
+          w_i = self.w_weight(p[ind], a[ind], s_i)
+          #print('e',ind, data)
+          if w.shape[0] == data.shape[0]:
+            w[ind] *= w_i
+          else:
+            w = np.append(w, w_i)
 
-      centroid_index += 1
-      self.centroids[centroid_index] = centroid
+          s = np.append(s, max(s_centroid))
+          ind += 1
+  
+      if data.size > 0:
+        max_w_sample_ind = w.argmax()
+        centroid = data[max_w_sample_ind, :]
+        centroids_dists = np.concatenate([centroids_dists, [dists[max_w_sample_ind, :]]], axis=0)
 
-      p_prev = p
-      s_prev = s
-      dists, data, centroids_dists = self.removeData(meanDist, dists, data, max_w_sample_ind, centroids_dists=centroids_dists)
+        centroid_index += 1
+        self.centroids[centroid_index] = centroid
 
-    print(self.centroids)
+        dists, data, centroids_dists, dist_filter = self.removeData(meanDist, dists, data, max_w_sample_ind, centroids_dists=centroids_dists)
+        p_prev = p[dist_filter]
+        s_prev = s[dist_filter]
+
+      #print(f'{4+ind} data', data.shape)
+      #print(f'{4+ind} dist', dists.shape)
+      #print(f'{4+ind} p',len(p), len(p_prev))
+      #print(f'{4+ind} cdists', centroids_dists.shape)
+
+    print('Canopy found %d centers' %(len(self.centroids)))
         
 
-
+'''
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import style
 from sklearn import datasets
 
 style.use('ggplot')
+data = np.array([[ 1,  2,  3],
+       [ 4,  5,  6],
+       [ 7,  8,  9],
+       [10, 11, 12]])
+
 data = np.array([[3,5],
                  [1,4],
                  [10,12],
                  [11,13],
                  [12,10],
-                 [2,3]])
+                 [2,3],
+                 [22,20],
+                 [23,21],
+                 [24,22]])
 
 iris = datasets.load_iris()
-data = iris.data[:, :4]  # we only take the first two features.
+#data = iris.data[:, :4]  # we only take the first two features.
 y = iris.target
 #plt.scatter(data[:,0], data[:,1], s=100)
 #plt.show()
 df = pd.DataFrame(data)
-from scipy.spatial.distance import pdist
 canopy = MyCanopy()
 canopy.fit(data)
-'''
+
 color = ['g','c','y']
 print(clf.clusters)
 for centroid in clf.centroids:
