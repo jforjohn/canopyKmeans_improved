@@ -1,0 +1,5 @@
+scikit-learn>=0.20.0
+numpy
+pandas
+configparser
+scipy
